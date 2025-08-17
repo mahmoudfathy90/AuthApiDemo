@@ -1,14 +1,9 @@
-using AuthApiDemo.Data;
-using AuthApiDemo.Models;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
-using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
-using System.Security.Cryptography;
-using System.Text;
-using Microsoft.AspNetCore.Cryptography.KeyDerivation;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
+using AuthApiDemo.Domain.Interfaces;
+using AuthApiDemo.Application.DTOs;
+using AuthApiDemo.Models;
 
 namespace AuthApiDemo.Controllers
 {
@@ -16,70 +11,65 @@ namespace AuthApiDemo.Controllers
     [Route("api/[controller]")]
     public class AuthController : ControllerBase
     {
-        private readonly AppDbContext _context;
-        private readonly IConfiguration _config;
+        private readonly IAuthService _authService;
 
-        public AuthController(AppDbContext context, IConfiguration config)
+        public AuthController(IAuthService authService)
         {
-            _context = context;
-            _config = config;
+            _authService = authService;
         }
 
         [AllowAnonymous]
         [HttpPost("register")]
-        public async Task<IActionResult> Register(RegisterRequest request)
+        public async Task<IActionResult> Register([FromBody] RegisterRequest request)
         {
             try
             {
-                // Validate request
                 if (!ModelState.IsValid)
                     return BadRequest(ModelState);
 
-                // Check if user already exists by email
-                if (await _context.UserAuths.AnyAsync(ua => ua.Email == request.Email))
-                    return BadRequest("Email already registered");
+                var result = await _authService.RegisterAsync(
+                    request.Email,
+                    request.Password,
+                    request.FirstName,
+                    request.LastName,
+                    request.Gender);
 
-                // Create secure password hash
-                var (passwordHash, passwordSalt) = CreateSecurePasswordHash(request.Password);
-
-                // Create User record
-                var user = new User
+                if (!result.Success)
                 {
-                    FirstName = request.FirstName,
-                    LastName = request.LastName,
-                    Email = request.Email,
-                    Gender = request.Gender,
-                    Active = true
+                    return BadRequest(new RegisterResultDto
+                    {
+                        Success = false,
+                        Message = result.Message
+                    });
+                }
+
+                var userDto = new UserDto
+                {
+                    UserId = result.User!.UserId,
+                    FirstName = result.User.FirstName,
+                    LastName = result.User.LastName,
+                    Email = result.User.Email,
+                    Gender = result.User.Gender,
+                    Active = result.User.Active,
+                    CreatedAt = result.User.CreatedAt,
+                    UpdatedAt = result.User.UpdatedAt,
+                    FullName = result.User.GetFullName()
                 };
 
-                _context.Users.Add(user);
-                await _context.SaveChangesAsync();
-
-                // Create UserAuth record
-                var userAuth = new UserAuth
+                return Ok(new RegisterResultDto
                 {
-                    UserId = user.UserId,
-                    Email = request.Email,
-                    PasswordHash = passwordHash,
-                    PasswordSalt = passwordSalt,
-                    CreatedAt = DateTime.UtcNow
-                };
-
-                _context.UserAuths.Add(userAuth);
-                var result = await _context.SaveChangesAsync();
-
-                if (result <= 0)
-                    throw new InvalidOperationException("Failed to save user authentication data. No rows were affected.");
-
-                return Ok(new { 
-                    message = "User registered successfully", 
-                    email = user.Email,
-                    userId = user.UserId 
+                    Success = true,
+                    Message = result.Message,
+                    User = userDto
                 });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Internal server error", error = ex.Message });
+                return StatusCode(500, new RegisterResultDto
+                {
+                    Success = false,
+                    Message = "Internal server error"
+                });
             }
         }
 
@@ -89,65 +79,38 @@ namespace AuthApiDemo.Controllers
         {
             try
             {
-                // Validate request
                 if (!ModelState.IsValid)
                     return BadRequest(ModelState);
 
-                // Find user authentication by email
-                var userAuth = await _context.UserAuths
-                    .Include(ua => ua.User)
-                    .FirstOrDefaultAsync(ua => ua.Email == request.Email);
+                var result = await _authService.LoginAsync(request.Email, request.Password);
 
-                if (userAuth == null)
-                    return Unauthorized(new LoginResponse 
-                    { 
-                        IsAuthenticated = false, 
-                        Message = "Invalid email or password" 
-                    });
-
-                // Verify password
-                if (!VerifySecurePassword(request.Password, userAuth.PasswordHash, userAuth.PasswordSalt))
-                    return Unauthorized(new LoginResponse 
-                    { 
-                        IsAuthenticated = false, 
-                        Message = "Invalid email or password" 
-                    });
-
-                // Check if user is active
-                if (!userAuth.User.Active)
-                    return Unauthorized(new LoginResponse 
-                    { 
-                        IsAuthenticated = false, 
-                        Message = "Account is deactivated" 
-                    });
-
-                // Generate tokens
-                var tokens = GenerateTokens(userAuth.User);
-
-                // Update last login time
-                userAuth.LastLoginAt = DateTime.UtcNow;
-                await _context.SaveChangesAsync();
-
-                var response = new LoginResponse
+                if (!result.Success)
                 {
-                    Token = tokens.Token,
-                    RefreshToken = tokens.RefreshToken,
-                    Expiration = tokens.Expiration,
-                    Email = userAuth.User.Email,
-                    FirstName = userAuth.User.FirstName,
-                    LastName = userAuth.User.LastName,
-                    IsAuthenticated = true,
-                    Message = "Login successful"
-                };
+                    return Unauthorized(new LoginResponse
+                    {
+                        IsAuthenticated = false,
+                        Message = result.Message
+                    });
+                }
 
-                return Ok(response);
+                return Ok(new LoginResponse
+                {
+                    Token = result.Token!,
+                    RefreshToken = result.RefreshToken!,
+                    Expiration = result.Expiration!.Value,
+                    Email = result.User!.Email,
+                    FirstName = result.User.FirstName,
+                    LastName = result.User.LastName,
+                    IsAuthenticated = true,
+                    Message = result.Message
+                });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new LoginResponse 
-                { 
-                    IsAuthenticated = false, 
-                    Message = "Internal server error" 
+                return StatusCode(500, new LoginResponse
+                {
+                    IsAuthenticated = false,
+                    Message = "Internal server error"
                 });
             }
         }
@@ -158,122 +121,64 @@ namespace AuthApiDemo.Controllers
         {
             try
             {
-                // Get the current user from the controller base
                 var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
                 if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
                 {
                     return Unauthorized(new { message = "Invalid user token" });
                 }
 
-                // Find the user in the database
-                var user = await _context.Users
-                    .FirstOrDefaultAsync(u => u.UserId == userId && u.Active);
+                var result = await _authService.RefreshTokenAsync(userId, refreshToken);
 
-                if (user == null)
+                if (!result.Success)
                 {
-                    return Unauthorized(new { message = "User not found or inactive" });
+                    return Unauthorized(new { message = result.Message });
                 }
 
-                // Validate refresh token (in a real application, you would store and validate refresh tokens)
-                // For now, we'll just generate new tokens
-                var tokens = GenerateTokens(user);
-
-                var response = new AuthResponse
+                return Ok(new AuthResponse
                 {
-                    Token = tokens.Token,
-                    RefreshToken = tokens.RefreshToken,
-                    Expiration = tokens.Expiration
-                };
-
-                return Ok(response);
+                    Token = result.Token!,
+                    RefreshToken = result.RefreshToken!,
+                    Expiration = result.Expiration!.Value
+                });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Internal server error", error = ex.Message });
+                return StatusCode(500, new { message = "Internal server error" });
             }
         }
 
-        private (byte[] hash, byte[] salt) CreateSecurePasswordHash(string password)
-        {
-            // Generate a random salt using RandomNumberGenerator
-            var salt = new byte[32];
-            using (var rng = RandomNumberGenerator.Create())
-            {
-                rng.GetBytes(salt);
-            }
-
-            // Get password key from appsettings
-            var passwordKey = _config["AppSettings:passwordKey"] ?? "default_password_key_123!";
-
-            // Create password hash using KeyDerivation with PBKDF2
-            var hash = KeyDerivation.Pbkdf2(
-                password: password,
-                salt: salt,
-                prf: KeyDerivationPrf.HMACSHA512,
-                iterationCount: 10000,
-                numBytesRequested: 32
-            );
-
-            return (hash, salt);
-        }
-
-        private bool VerifySecurePassword(string password, byte[] storedHash, byte[] storedSalt)
+        [Authorize]
+        [HttpPost("change-password")]
+        public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
         {
             try
             {
-                // Get password key from appsettings
-                var passwordKey = _config["AppSettings:passwordKey"] ?? "default_password_key_123!";
+                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (string.IsNullOrEmpty(userIdClaim) || !int.TryParse(userIdClaim, out int userId))
+                {
+                    return Unauthorized(new { message = "Invalid user token" });
+                }
 
-                // Recreate hash using the same parameters
-                var hash = KeyDerivation.Pbkdf2(
-                    password: password,
-                    salt: storedSalt,
-                    prf: KeyDerivationPrf.HMACSHA512,
-                    iterationCount: 10000,
-                    numBytesRequested: 32
-                );
+                var result = await _authService.ChangePasswordAsync(userId, request.CurrentPassword, request.NewPassword);
 
-                // Compare hashes
-                return hash.SequenceEqual(storedHash);
+                if (!result)
+                {
+                    return BadRequest(new { message = "Failed to change password. Please verify your current password." });
+                }
+
+                return Ok(new { message = "Password changed successfully" });
             }
-            catch
+            catch (Exception ex)
             {
-                return false;
+                return StatusCode(500, new { message = "Internal server error" });
             }
         }
+    }
 
-        private AuthResponse GenerateTokens(User user)
-        {
-            var jwtKey = _config["AppSettings:TokenKey"] ?? "super_secret_key_123!";
-            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
-            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-            var expires = DateTime.UtcNow.AddDays(1);
-
-            var claims = new[]
-            {
-                new Claim(ClaimTypes.NameIdentifier, user.UserId.ToString()),
-                new Claim(ClaimTypes.Email, user.Email),
-                new Claim(ClaimTypes.Name, $"{user.FirstName} {user.LastName}"),
-                new Claim("FirstName", user.FirstName),
-                new Claim("LastName", user.LastName)
-            };
-
-            var token = new JwtSecurityToken(
-                audience: null,
-                claims: claims,
-                expires: expires,
-                signingCredentials: creds
-            );
-
-            var jwt = new JwtSecurityTokenHandler().WriteToken(token);
-            var refreshToken = Convert.ToBase64String(RandomNumberGenerator.GetBytes(64));
-
-            return new AuthResponse
-            {
-                Token = jwt,
-                RefreshToken = refreshToken,
-                Expiration = expires
-            };
-        }
+    // Additional request model for change password
+    public class ChangePasswordRequest
+    {
+        public string CurrentPassword { get; set; } = string.Empty;
+        public string NewPassword { get; set; } = string.Empty;
     }
 }

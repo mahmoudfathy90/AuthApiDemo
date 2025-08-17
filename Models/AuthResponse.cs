@@ -2,8 +2,8 @@ namespace AuthApiDemo.Models
 {
     public class AuthResponse
     {
-        public string Token { get; set; } = "";
-        public string RefreshToken { get; set; } = "";
-        public DateTime Expiration { get; set; } = DateTime.Now;
+        public string Token { get; set; } = string.Empty;
+        public string RefreshToken { get; set; } = string.Empty;
+        public DateTime Expiration { get; set; }
     }
-} 
+}

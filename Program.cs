@@ -28,8 +28,8 @@ builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserService>();
 
 // Register utility services
-builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
-builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
+builder.Services.AddScoped<IPasswordHasher, AuthApiDemo.Infrastructure.PasswordHasher>();
+builder.Services.AddScoped<IJwtTokenService, AuthApiDemo.Infrastructure.JwtTokenService>();
 
 // Configure JWT authentication
 var jwtKey = builder.Configuration["AppSettings:TokenKey"] ?? "super_secret_key_123!";

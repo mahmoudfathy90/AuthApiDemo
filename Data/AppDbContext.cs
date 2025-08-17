@@ -15,16 +15,27 @@ namespace AuthApiDemo.Data
 
 
         public DbSet<User> Users { get; set; }
+        public DbSet<UserAuth> UserAuths { get; set; }
 
         
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.HasDefaultSchema("TutorialAppSchema");
+        
         modelBuilder.Entity<User>()
         .ToTable("Users", "TutorialAppSchema")
         .HasKey(u => u.UserId);
 
+        modelBuilder.Entity<UserAuth>()
+        .ToTable("UserAuth", "TutorialAppSchema")
+        .HasKey(ua => ua.UserAuthId);
 
+        // Configure relationship between User and UserAuth
+        modelBuilder.Entity<UserAuth>()
+        .HasOne(ua => ua.User)
+        .WithOne()
+        .HasForeignKey<UserAuth>(ua => ua.UserId)
+        .OnDelete(DeleteBehavior.Cascade);
     }
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder) {
